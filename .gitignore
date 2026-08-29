@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+dist/
+
+# rust
+target/
+src-tauri/target/
+
+# generated (tauri)
+src-tauri/gen/
+src-tauri/capabilities/generated.json
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.pem
