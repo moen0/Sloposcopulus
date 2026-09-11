@@ -1,44 +1,78 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use keyring::Entry;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-pub const KEY_FILE: &str = "keys.json";
+/// Pre-keychain plaintext key store. Only read once, to migrate into the
+/// keychain on first run after upgrading; deleted immediately after.
+pub const LEGACY_KEY_FILE: &str = "keys.json";
+/// Non-secret index of which providers have a key in the keychain — the
+/// keychain itself has no "list all entries for this service" API.
+pub const KEY_INDEX_FILE: &str = "keys_index.json";
 pub const STATE_FILE: &str = "state.json";
+
+const KEYCHAIN_SERVICE: &str = "dev.sloposcopulus";
 
 // ---------------------------------------------------------------- storage
 
-fn keys_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn keychain_entry(provider: &str) -> Result<Entry, String> {
+    Entry::new(KEYCHAIN_SERVICE, provider).map_err(|e| format!("keychain error: {e}"))
+}
+
+fn legacy_keys_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("no app data dir: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create app data dir: {e}"))?;
-    Ok(dir.join(KEY_FILE))
+    Ok(dir.join(LEGACY_KEY_FILE))
 }
 
-fn load_keys(app: &AppHandle) -> Result<HashMap<String, String>, String> {
-    let path = keys_path(app)?;
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("cannot read key store: {e}"))?;
-    serde_json::from_str(&raw).map_err(|e| format!("corrupt key store: {e}"))
+fn key_index_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create app data dir: {e}"))?;
+    Ok(dir.join(KEY_INDEX_FILE))
 }
 
-fn save_keys(app: &AppHandle, keys: &HashMap<String, String>) -> Result<(), String> {
-    let path = keys_path(app)?;
-    let raw = serde_json::to_string_pretty(keys).map_err(|e| e.to_string())?;
-    std::fs::write(&path, raw).map_err(|e| format!("cannot write key store: {e}"))?;
-    #[cfg(unix)]
-    {
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+fn save_index(app: &AppHandle, index: &HashSet<String>) -> Result<(), String> {
+    let path = key_index_path(app)?;
+    let raw = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+    std::fs::write(&path, raw).map_err(|e| format!("cannot write key index: {e}"))
+}
+
+/// Loads the provider index, migrating any pre-keychain plaintext keys into
+/// the OS keychain the first time this runs after upgrading.
+fn load_index(app: &AppHandle) -> Result<HashSet<String>, String> {
+    let path = key_index_path(app)?;
+    if path.exists() {
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("cannot read key index: {e}"))?;
+        return serde_json::from_str(&raw).map_err(|e| format!("corrupt key index: {e}"));
     }
-    Ok(())
+
+    let legacy_path = legacy_keys_path(app)?;
+    if !legacy_path.exists() {
+        return Ok(HashSet::new());
+    }
+    let raw = std::fs::read_to_string(&legacy_path).map_err(|e| format!("cannot read legacy key store: {e}"))?;
+    let legacy: HashMap<String, String> = serde_json::from_str(&raw).map_err(|e| format!("corrupt legacy key store: {e}"))?;
+    let mut index = HashSet::new();
+    for (provider, key) in legacy {
+        keychain_entry(&provider)?
+            .set_password(&key)
+            .map_err(|e| format!("keychain error: {e}"))?;
+        index.insert(provider);
+    }
+    save_index(app, &index)?;
+    let _ = std::fs::remove_file(&legacy_path);
+    Ok(index)
 }
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -80,8 +114,16 @@ pub async fn save_state(app: AppHandle, state: serde_json::Value) -> Result<(), 
 
 #[tauri::command]
 pub async fn reset_all(app: AppHandle) -> Result<(), String> {
+    if let Ok(index) = load_index(&app) {
+        for provider in index {
+            if let Ok(entry) = keychain_entry(&provider) {
+                let _ = entry.delete_credential();
+            }
+        }
+    }
     let _ = std::fs::remove_file(state_path(&app)?);
-    let _ = std::fs::remove_file(keys_path(&app)?);
+    let _ = std::fs::remove_file(key_index_path(&app)?);
+    let _ = std::fs::remove_file(legacy_keys_path(&app)?);
     Ok(())
 }
 
@@ -138,29 +180,36 @@ pub async fn save_api_key(
     if key.is_empty() {
         return Err("key is empty".into());
     }
-    let mut store = load_keys(&app)?;
-    store.insert(provider.to_string(), key.to_string());
-    save_keys(&app, &store)?;
+    keychain_entry(&provider)?
+        .set_password(key)
+        .map_err(|e| format!("keychain error: {e}"))?;
+    let mut index = load_index(&app)?;
+    index.insert(provider);
+    save_index(&app, &index)?;
     Ok(mask_key(key))
 }
 
 #[tauri::command]
 pub async fn remove_api_key(app: AppHandle, provider: String) -> Result<(), String> {
-    let mut store = load_keys(&app)?;
-    store.remove(&provider);
-    save_keys(&app, &store)
+    match keychain_entry(&provider)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(format!("keychain error: {e}")),
+    }
+    let mut index = load_index(&app)?;
+    index.remove(&provider);
+    save_index(&app, &index)
 }
 
 #[tauri::command]
 pub async fn list_api_keys(app: AppHandle) -> Result<Vec<KeyInfo>, String> {
-    let store = load_keys(&app)?;
-    Ok(store
-        .iter()
-        .map(|(p, k)| KeyInfo {
-            provider: p.clone(),
-            masked: mask_key(k),
-        })
-        .collect())
+    let index = load_index(&app)?;
+    let mut out = Vec::new();
+    for provider in index {
+        if let Ok(key) = keychain_entry(&provider)?.get_password() {
+            out.push(KeyInfo { masked: mask_key(&key), provider });
+        }
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -171,10 +220,12 @@ pub async fn fetch_usage(
 ) -> Result<UsageSnapshot, String> {
     let key = match key {
         Some(k) if !k.trim().is_empty() => k.trim().to_string(),
-        _ => match load_keys(&app)?.get(&provider) {
-            Some(k) => k.clone(),
-            None => return Err("no API key stored for this provider".into()),
-        },
+        _ => {
+            let _ = load_index(&app)?; // ensures any legacy plaintext key has been migrated
+            keychain_entry(&provider)?
+                .get_password()
+                .map_err(|_| "no API key stored for this provider".to_string())?
+        }
     };
     match provider.as_str() {
         "anthropic" => anthropic_usage(&key).await,
@@ -189,7 +240,7 @@ pub async fn fetch_usage(
 fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
-        .user_agent("SlopUse/0.1")
+        .user_agent("Sloposcopulus/0.1")
         .build()
         .map_err(|e| e.to_string())
 }

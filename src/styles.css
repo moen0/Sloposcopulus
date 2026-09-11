@@ -84,7 +84,7 @@ input { font: inherit; }
 
 .brand { display: flex; gap: 9px; align-items: center; min-width: 0; }
 .brand-text { display: flex; flex-direction: column; gap: 0; min-width: 0; }
-.brand-name { font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+.brand-name { font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand-sub { font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .actions { display: flex; gap: 2px; flex-shrink: 0; }

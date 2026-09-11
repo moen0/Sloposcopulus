@@ -30,19 +30,19 @@ pub fn run() {
             show_widget(app);
         }))
         .setup(|app| {
-            let show = MenuItemBuilder::with_id("show", "Show SlopUse").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit SlopUse").build(app)?;
+            let show = MenuItemBuilder::with_id("show", "Show Sloposcopulus").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit Sloposcopulus").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
             let tray_icon = app
                 .default_window_icon()
                 .cloned()
-                .expect("SlopUse requires a default window icon");
+                .expect("Sloposcopulus requires a default window icon");
 
             TrayIconBuilder::new()
                 .icon(tray_icon)
                 .icon_as_template(true)
-                .tooltip("SlopUse")
+                .tooltip("Sloposcopulus")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -74,5 +74,5 @@ pub fn run() {
             connectors::reset_all
         ])
         .run(tauri::generate_context!())
-        .expect("error while running SlopUse");
+        .expect("error while running Sloposcopulus");
 }

@@ -1,4 +1,4 @@
-# SlopUse
+# Sloposcopulus
 
 A floating, always-on-top desktop widget that tracks your AI usage — tokens, spend, and quota meters — for Claude, ChatGPT, Gemini, GitHub Copilot, and any custom agent. Runs locally as a native macOS app (Tauri v2 + React).
 

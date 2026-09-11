@@ -363,7 +363,7 @@ export function App() {
           setSettings(defaultSettings)
           setKeys({})
           setActive(defaultAgents[0].name)
-          showNotice('All data reset — fresh SlopUse')
+          showNotice('All data reset — fresh Sloposcopulus')
         })
         .catch(() => showNotice('Reset failed'))
     } else {
@@ -408,7 +408,7 @@ export function App() {
       <header className="titlebar" data-tauri-drag-region onMouseDown={onDragStart}>
         <div className="brand" onMouseDown={onDragStart}>
           <div className="brand-text">
-            <span className="brand-name">SLOPUSE</span>
+            <span className="brand-name">SLOPOSCOPULUS</span>
             <span className="brand-sub">{agent ? `${agent.name} · ${sourceLabel}` : ''}</span>
           </div>
         </div>

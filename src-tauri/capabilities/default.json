@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop-default",
-  "description": "Default capabilities for the SlopUse main window",
+  "description": "Default capabilities for the Sloposcopulus main window",
   "windows": ["main"],
   "permissions": [
     "core:default",

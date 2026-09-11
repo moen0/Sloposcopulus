@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SlopUse",
+  "productName": "Sloposcopulus",
   "version": "0.1.0",
-  "identifier": "dev.agentmeter.app",
+  "identifier": "dev.sloposcopulus",
   "build": {
     "beforeDevCommand": "npm run dev -- --host 0.0.0.0",
     "devUrl": "http://localhost:5173",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SlopUse",
+        "title": "Sloposcopulus",
         "width": 330,
         "height": 420,
         "minWidth": 260,
