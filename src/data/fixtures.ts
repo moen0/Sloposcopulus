@@ -1,9 +1,17 @@
 import type { Agent, ConnectorSource, HistoryPoint, Meter, TokenCount } from '../types'
+import { countdownToResetAt, hydrateMeter, toneFor, windowHoursFor } from '../lib/meters'
 
 export const STORAGE_KEYS = {
-  agents: 'slopuse.agents.v1',
-  settings: 'slopuse.settings.v1',
+  agents: 'slopuse.agents.v2',
+  settings: 'slopuse.settings.v2',
 } as const
+
+export function migrateAgent(agent: Agent): Agent {
+  return {
+    ...agent,
+    meters: agent.meters.map((m) => hydrateMeter(m)),
+  }
+}
 
 export const DEFAULT_AGENT_KEYS: Record<string, string> = {
   anthropic: 'Claude',
@@ -46,8 +54,8 @@ export const defaultAgents: Agent[] = [
     tokens: { input: 2_410_000, output: 86_000, total: 2_496_000 },
     history: seedHistory(18.42, 2_400_000),
     meters: [
-      { label: 'Daily', used: 100, tone: 'hot', reset: '2h 6m', at: '4:29 PM' },
-      { label: 'Weekly', used: 26, tone: 'blue', reset: '5d 10h', at: 'Aug 25' },
+      { label: 'Session', used: 43, tone: 'blue', reset: '2h 15m', at: '4:29 PM', resetAt: countdownToResetAt('2h 15m') },
+      { label: 'Weekly', used: 38, tone: 'amber', reset: '4d 8h', at: 'Sep 2', resetAt: countdownToResetAt('4d 8h') },
     ],
   },
   {
@@ -62,8 +70,8 @@ export const defaultAgents: Agent[] = [
     tokens: { input: 3_050_000, output: 120_000, total: 3_170_000 },
     history: seedHistory(20.0, 3_000_000),
     meters: [
-      { label: 'Daily', used: 42, tone: 'blue', reset: '3h 18m', at: '5:41 PM' },
-      { label: 'Weekly', used: 18, tone: 'amber', reset: '4d 2h', at: 'Aug 22' },
+      { label: 'Session', used: 42, tone: 'blue', reset: '3h 18m', at: '5:41 PM', resetAt: countdownToResetAt('3h 18m') },
+      { label: 'Weekly', used: 52, tone: 'amber', reset: '5d 2h', at: 'Sep 3', resetAt: countdownToResetAt('5d 2h') },
     ],
   },
   {
@@ -111,20 +119,28 @@ export function blankAgent(name: string, mark: string, color: string): Agent {
 }
 
 const meterSeeds: [string, Meter['tone']][] = [
-  ['Daily', 'hot'],
-  ['Weekly', 'blue'],
-  ['Monthly', 'amber'],
+  ['Session', 'blue'],
+  ['Weekly', 'amber'],
+  ['Monthly', 'blue'],
 ]
 
+function seedReset(label: string): string {
+  if (/week/i.test(label)) return `${2 + Math.floor(Math.random() * 5)}d ${Math.floor(Math.random() * 20)}h`
+  if (/month/i.test(label)) return `${8 + Math.floor(Math.random() * 18)}d ${Math.floor(Math.random() * 20)}h`
+  return `${1 + Math.floor(Math.random() * 3)}h ${Math.floor(Math.random() * 50)}m`
+}
+
 function seedMeters(): Meter[] {
-  return meterSeeds.map(([label, tone], i) => {
+  return meterSeeds.map(([label], i) => {
     const used = Math.min(96, Math.max(8, Math.round(42 + i * -9 + (Math.random() - 0.5) * 34)))
+    const reset = seedReset(label)
     return {
       label,
       used,
-      tone,
-      reset: `${1 + Math.floor(Math.random() * 23)}h ${Math.floor(Math.random() * 59)}m`,
+      tone: toneFor(used),
+      reset,
       at: '—',
+      resetAt: countdownToResetAt(reset),
     }
   })
 }
@@ -158,11 +174,17 @@ function pushHistory(history: HistoryPoint[], spend: number, tokens: TokenCount)
 
 export function tickAgent(agent: Agent): Agent {
   if (!agent.connected) return agent
+  const now = Date.now()
   const meters = agent.meters.map((m) => {
-    if (m.used >= 100) return m
+    const resetAt = m.resetAt && m.resetAt > 0 ? m.resetAt : countdownToResetAt(m.reset, now)
+    if (resetAt && resetAt <= now) {
+      const next = now + windowHoursFor(m.label) * 3_600_000
+      return { ...m, used: Math.max(3, Math.round(Math.random() * 8)), tone: toneFor(4), resetAt: next }
+    }
+    if (m.used >= 100) return { ...m, tone: toneFor(m.used), resetAt }
     const drift = Math.round((Math.random() - 0.35) * 5)
     const used = Math.min(100, Math.max(3, m.used + drift))
-    return { ...m, used }
+    return { ...m, used, tone: toneFor(used), resetAt }
   })
   const spend = Math.round((agent.spend + Math.random() * 0.3) * 100) / 100
   const tokens: TokenCount = {
@@ -184,13 +206,15 @@ export function applyRemote(
     meters: { label: string; used: number; tone: string; reset: string; at: string }[]
   }
 ): Agent {
-  const meters: Meter[] = remote.meters.map((m) => ({
-    label: m.label,
-    used: Math.round(m.used),
-    tone: (m.tone as Meter['tone']) || 'blue',
-    reset: m.reset,
-    at: m.at,
-  }))
+  const meters: Meter[] = remote.meters.map((m) =>
+    hydrateMeter({
+      label: m.label,
+      used: Math.round(m.used),
+      tone: (m.tone as Meter['tone']) || 'blue',
+      reset: m.reset,
+      at: m.at,
+    })
+  )
   const source = (remote.source as Agent['source']) || 'estimated'
   return {
     ...agent,

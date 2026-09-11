@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 use std::os::unix::fs::PermissionsExt;
 
 pub const KEY_FILE: &str = "keys.json";
+pub const STATE_FILE: &str = "state.json";
 
 // ---------------------------------------------------------------- storage
 
@@ -37,6 +38,50 @@ fn save_keys(app: &AppHandle, keys: &HashMap<String, String>) -> Result<(), Stri
     {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
+    Ok(())
+}
+
+fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create app data dir: {e}"))?;
+    Ok(dir.join(STATE_FILE))
+}
+
+#[tauri::command]
+pub async fn load_state(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let path = state_path(&app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("cannot read state: {e}"))?;
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) if !v.is_null() => Ok(Some(v)),
+        _ => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn save_state(app: AppHandle, state: serde_json::Value) -> Result<(), String> {
+    if state.is_null() || state.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return Ok(());
+    }
+    let path = state_path(&app)?;
+    let raw = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+    std::fs::write(&path, raw).map_err(|e| format!("cannot write state: {e}"))?;
+    #[cfg(unix)]
+    {
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reset_all(app: AppHandle) -> Result<(), String> {
+    let _ = std::fs::remove_file(state_path(&app)?);
+    let _ = std::fs::remove_file(keys_path(&app)?);
     Ok(())
 }
 
@@ -281,26 +326,28 @@ async fn anthropic_usage(key: &str) -> Result<UsageSnapshot, String> {
     let source = if spent.is_some() { "official" } else { "estimated" };
     let spend = spent.unwrap_or_else(|| estimate_cost_usd(input, output));
 
+    let session_pct = used_pct.unwrap_or_else(|| {
+        if input + output == 0 {
+            0.0
+        } else {
+            ((tokens.total as f64) % 200_000.0) / 200_000.0 * 100.0
+        }
+    });
+    let weekly_pct = (session_pct * 0.55).clamp(0.0, 100.0);
     let meters = vec![
         MeterSnapshot {
-            label: "This period".into(),
-            used: used_pct.unwrap_or_else(|| {
-                if input + output == 0 {
-                    0.0
-                } else {
-                    ((tokens.total as f64) % 200_000.0) / 200_000.0 * 100.0
-                }
-            }),
-            tone: "blue".into(),
-            reset: "periodic".into(),
-            at: "—".into(),
-        },
-        MeterSnapshot {
-            label: "Session window".into(),
-            used: 0.0,
-            tone: "blue".into(),
+            label: "Session".into(),
+            used: session_pct,
+            tone: tone_for(session_pct),
             reset: "5h".into(),
             at: "rolling".into(),
+        },
+        MeterSnapshot {
+            label: "Weekly".into(),
+            used: weekly_pct,
+            tone: tone_for(weekly_pct),
+            reset: "7d".into(),
+            at: "—".into(),
         },
     ];
 

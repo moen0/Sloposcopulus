@@ -9,7 +9,8 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
-  Minus,
+  Maximize2,
+  Minimize2,
   Pin,
   PinOff,
   Plus,
@@ -20,7 +21,8 @@ import {
   X,
 } from 'lucide-react'
 import type { Agent, Settings as SettingsType } from './types'
-import { STORAGE_KEYS, applyRemote, connectAgent, defaultAgents, providerId, tickAgent } from './data/fixtures'
+import { STORAGE_KEYS, applyRemote, connectAgent, defaultAgents, migrateAgent, providerId, tickAgent } from './data/fixtures'
+import { alertLevel, displayName } from './lib/meters'
 import { load, save } from './lib/storage'
 import { MeterRow } from './components/MeterRow'
 import { AddAgentModal } from './components/AddAgentModal'
@@ -28,7 +30,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { SpendChart, formatTokens } from './components/SpendChart'
 import './styles.css'
 
-const defaultSettings: SettingsType = { theme: 'dark', pollSeconds: 60, alerts: true, alwaysOnTop: true }
+const defaultSettings: SettingsType = { theme: 'dark', pollSeconds: 60, alerts: true, alwaysOnTop: true, compact: false }
 
 const NATIVE = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -51,10 +53,12 @@ function lightTint(hex: string): string {
 }
 
 export function App() {
-  const [agents, setAgents] = useState<Agent[]>(() => load(STORAGE_KEYS.agents, defaultAgents))
+  const [agents, setAgents] = useState<Agent[]>(() => load(STORAGE_KEYS.agents, defaultAgents).map(migrateAgent))
   const [settings, setSettings] = useState<SettingsType>(() => ({ ...defaultSettings, ...load(STORAGE_KEYS.settings, defaultSettings) }))
   const [active, setActive] = useState(() => load(STORAGE_KEYS.agents, defaultAgents)[0]?.name ?? defaultAgents[0].name)
-  const [compact, setCompact] = useState(false)
+  const [compact, setCompact] = useState(() => Boolean(load(STORAGE_KEYS.settings, defaultSettings).compact))
+  const [wide, setWide] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
   const [lastSync, setLastSync] = useState('')
   const [notice, setNotice] = useState('')
   const [syncing, setSyncing] = useState(false)
@@ -68,9 +72,69 @@ export function App() {
 
   const agentsRef = useRef(agents)
   agentsRef.current = agents
+  const rootRef = useRef<HTMLElement | null>(null)
+  const compactPinned = useRef(false)
+  const ignoreRoUntil = useRef(0)
+  const expandedSize = useRef({ w: 360, h: 480 })
+  const noticeTimer = useRef(0)
+  const alerted = useRef<Record<string, number>>({})
+  const alertsPrimed = useRef(false)
+
+  const hydrated = useRef(!NATIVE)
 
   useEffect(() => save(STORAGE_KEYS.agents, agents), [agents])
   useEffect(() => save(STORAGE_KEYS.settings, settings), [settings])
+
+  useEffect(() => {
+    if (!NATIVE) return
+    let cancelled = false
+    void invoke<{ agents?: Agent[]; settings?: Partial<SettingsType> }>('load_state')
+      .then((s) => {
+        if (cancelled) return
+        hydrated.current = true
+        if (s?.agents?.length) {
+          setAgents(s.agents.map(migrateAgent))
+        } else {
+          setAgents(load(STORAGE_KEYS.agents, defaultAgents).map(migrateAgent))
+        }
+        if (s?.settings) {
+          const next = { ...defaultSettings, ...s.settings }
+          setSettings((prev) => ({ ...defaultSettings, ...prev, ...s.settings }))
+          if (next.compact) {
+            setCompact(true)
+            compactPinned.current = true
+            try {
+              void getCurrentWindow().setSize(new LogicalSize(340, 178))
+            } catch {
+              /* browser preview */
+            }
+          }
+        } else {
+          setSettings({ ...defaultSettings, ...load(STORAGE_KEYS.settings, defaultSettings) })
+        }
+      })
+      .catch(() => {
+        hydrated.current = true
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated.current) return
+    if (NATIVE) {
+      try {
+        void invoke('save_state', { state: { agents, settings } })
+      } catch {
+        /* browser preview */
+      }
+    } else {
+      save(STORAGE_KEYS.agents, agents)
+      save(STORAGE_KEYS.settings, settings)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, settings])
 
   useEffect(() => {
     if (!NATIVE) return
@@ -97,12 +161,17 @@ export function App() {
     } catch {
       /* browser preview */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.alwaysOnTop])
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
   }, [])
 
   function showNotice(message: string) {
     setNotice(message)
-    window.setTimeout(() => setNotice(''), 2600)
+    window.clearTimeout(noticeTimer.current)
+    noticeTimer.current = window.setTimeout(() => setNotice(''), 2800)
   }
 
   async function hideWindow() {
@@ -125,12 +194,44 @@ export function App() {
     }
   }
 
+  useEffect(() => {
+    const applySize = () => {
+      const width = window.innerWidth
+      const height = window.innerHeight
+      setWide(width >= 480)
+      if (Date.now() < ignoreRoUntil.current) return
+      if (height < 250) {
+        compactPinned.current = false
+        setCompact(true)
+      } else if (height > 310 && !compactPinned.current) {
+        setCompact(false)
+      }
+    }
+    window.addEventListener('resize', applySize)
+    applySize()
+    return () => window.removeEventListener('resize', applySize)
+  }, [])
+
   function toggleCompact() {
     const next = !compact
+    compactPinned.current = next
+    ignoreRoUntil.current = Date.now() + 600
     setCompact(next)
+    setSettings((s) => ({ ...s, compact: next }))
     if (NATIVE) {
       try {
-        void getCurrentWindow().setSize(new LogicalSize(next ? 320 : 330, next ? 172 : 430))
+        const win = getCurrentWindow()
+        if (next) {
+          void Promise.all([win.innerSize(), win.scaleFactor()])
+            .then(([size, factor]) => {
+              const logical = size.toLogical(factor)
+              expandedSize.current = { w: Math.round(logical.width), h: Math.round(logical.height) }
+            })
+            .catch(() => {})
+          void win.setSize(new LogicalSize(wide ? 560 : 340, 178))
+        } else {
+          void win.setSize(new LogicalSize(Math.max(330, expandedSize.current.w), Math.max(420, expandedSize.current.h)))
+        }
       } catch {
         /* browser preview */
       }
@@ -177,10 +278,39 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    const live = agentsRef.current.some((a) => a.connected && a.hasKey)
+    if (live) void sync()
+    else setLastSync(timeLabel(new Date()))
+  }, [sync])
+
+  useEffect(() => {
     if (settings.pollSeconds == null) return
     const id = window.setInterval(() => void sync(), settings.pollSeconds * 1000)
     return () => window.clearInterval(id)
   }, [settings.pollSeconds, sync])
+
+  useEffect(() => {
+    for (const a of agents) {
+      for (const m of a.meters) {
+        const key = `${a.name}:${m.label}`
+        const level = alertLevel(m.used)
+        if (!alertsPrimed.current || !settings.alerts) {
+          alerted.current[key] = Math.max(alerted.current[key] ?? 0, level)
+          continue
+        }
+        const prev = alerted.current[key] ?? 0
+        if (level > prev) {
+          alerted.current[key] = level
+          const name = displayName(m.label)
+          if (level >= 100) showNotice(`${a.name} ${name} limit reached`)
+          else showNotice(`${a.name} ${name} hit ${level}%`)
+        } else if (level < prev) {
+          alerted.current[key] = level
+        }
+      }
+    }
+    alertsPrimed.current = true
+  }, [agents, settings.alerts])
 
   async function connectCurrentAgent() {
     const a = agent
@@ -222,10 +352,27 @@ export function App() {
   }
 
   function resetDemoData() {
+    if (typeof window !== 'undefined' && !window.confirm('Reset everything? This removes saved agents, settings, and API keys.')) return
     localStorage.removeItem(STORAGE_KEYS.agents)
-    setAgents(defaultAgents)
-    setActive(defaultAgents[0].name)
-    showNotice('Demo data reset')
+    localStorage.removeItem(STORAGE_KEYS.settings)
+    if (NATIVE) {
+      hydrated.current = true
+      void invoke('reset_all')
+        .then(() => {
+          setAgents(defaultAgents)
+          setSettings(defaultSettings)
+          setKeys({})
+          setActive(defaultAgents[0].name)
+          showNotice('All data reset — fresh SlopUse')
+        })
+        .catch(() => showNotice('Reset failed'))
+    } else {
+      setAgents(defaultAgents)
+      setSettings(defaultSettings)
+      setActive(defaultAgents[0].name)
+      setCompact(false)
+      showNotice('Demo data reset')
+    }
   }
 
   async function handleSaveKey(pid: string, key: string) {
@@ -253,8 +400,9 @@ export function App() {
 
   return (
     <main
+      ref={rootRef}
       data-theme={settings.theme}
-      className={compact ? 'app compact' : 'app'}
+      className={`app${compact ? ' compact' : ''}${wide ? ' wide' : ''}`}
       style={{ ['--bg-tint' as string]: lightTint(agent?.color ?? '#d8d2c8') } as React.CSSProperties}
     >
       <header className="titlebar" data-tauri-drag-region onMouseDown={onDragStart}>
@@ -274,8 +422,8 @@ export function App() {
           <button aria-label="Always on top" className={settings.alwaysOnTop ? 'active' : ''} onClick={() => void togglePin()}>
             {settings.alwaysOnTop ? <Pin size={18} /> : <PinOff size={18} />}
           </button>
-          <button aria-label="Toggle compact" onClick={toggleCompact}>
-            <Minus size={20} />
+          <button aria-label={compact ? 'Expand widget' : 'Compact widget'} onClick={toggleCompact}>
+            {compact ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
           </button>
           <button aria-label="Hide to menu bar" onClick={() => void hideWindow()}>
             <X size={20} />
@@ -370,14 +518,11 @@ export function App() {
 
             <section className="meters">
               {agent.meters.length > 0 ? (
-                <>
-                  <div className="section-heading">
-                    <span>Usage meters</span>
-                  </div>
+                <div className="meters-list">
                   {agent.meters.map((meter) => (
-                    <MeterRow key={meter.label} meter={meter} />
+                    <MeterRow key={meter.label} meter={meter} now={now} />
                   ))}
-                </>
+                </div>
               ) : (
                 <div className="meters-empty">
                   <Activity size={16} />
@@ -390,7 +535,11 @@ export function App() {
       </div>
 
       <footer>
-        <button className="footer-alerts" onClick={() => setShowSettings(true)}>
+        <button
+          className="footer-alerts"
+          onClick={() => setSettings((s) => ({ ...s, alerts: !s.alerts }))}
+          aria-pressed={settings.alerts}
+        >
           {settings.alerts ? <BellRing size={14} /> : <BellOff size={14} />} Alerts {settings.alerts ? 'on' : 'off'}
         </button>
         <span className="synced">synced {lastSync || 'just now'}</span>

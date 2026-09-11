@@ -117,7 +117,7 @@ export function SettingsModal({ settings, onChange, onReset, onClose, keys, onSa
             </div>
 
             <button className="settings-reset" onClick={onReset}>
-              <RotateCcw size={14} /> Reset demo data
+              <RotateCcw size={14} /> Reset all data & API keys
             </button>
           </div>
         ) : (

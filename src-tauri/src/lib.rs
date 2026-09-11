@@ -6,13 +6,19 @@ use tauri::{
 
 mod connectors;
 
+fn show_widget<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 fn toggle_widget<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
         } else {
-            let _ = window.show();
-            let _ = window.set_focus();
+            show_widget(app);
         }
     }
 }
@@ -20,6 +26,9 @@ fn toggle_widget<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_widget(app);
+        }))
         .setup(|app| {
             let show = MenuItemBuilder::with_id("show", "Show SlopUse").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit SlopUse").build(app)?;
@@ -59,7 +68,10 @@ pub fn run() {
             connectors::save_api_key,
             connectors::remove_api_key,
             connectors::list_api_keys,
-            connectors::fetch_usage
+            connectors::fetch_usage,
+            connectors::load_state,
+            connectors::save_state,
+            connectors::reset_all
         ])
         .run(tauri::generate_context!())
         .expect("error while running SlopUse");

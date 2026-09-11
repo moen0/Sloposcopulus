@@ -6,6 +6,7 @@ export type Meter = {
   tone: Tone
   reset: string
   at: string
+  resetAt?: number
 }
 
 export type TokenCount = {
@@ -46,6 +47,7 @@ export type Settings = {
   pollSeconds: RefreshMode
   alerts: boolean
   alwaysOnTop: boolean
+  compact: boolean
 }
 
 export type ConnectorSource = 'official' | 'simulated'
